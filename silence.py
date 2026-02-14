@@ -2,8 +2,9 @@
 """
 Sound of Silence — Split an audio file into multiple files based on detected silence.
 
-Uses pydub (split_on_silence). Accepts settings from command-line arguments
-and/or a config file (configparser format). Command-line values override config.
+Uses pydub (detect_silence). Splits at the midpoint of each qualified silence
+so no audio is cut off. Accepts settings from command-line arguments and/or
+a config file (configparser format). Command-line values override config.
 """
 
 import argparse
@@ -12,7 +13,7 @@ import sys
 from pathlib import Path
 
 from pydub import AudioSegment
-from pydub.silence import detect_silence, split_on_silence
+from pydub.silence import detect_silence
 
 
 DEFAULT_CONFIG_PATH = Path("default.conf")
@@ -30,8 +31,7 @@ DEFAULTS = {
     "min_silence_duration": 0.5,
     "min_segment_length": 1.0,
     "max_segment_length": 600.0,
-    "padding_start": 0.1,
-    "padding_end": 0.1,
+    "max_padding": 0.0,
 }
 
 
@@ -99,18 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum length of each split segment (seconds); split at best silence within range.",
     )
     parser.add_argument(
-        "--padding-start",
+        "--max-padding",
         type=float,
         default=None,
         metavar="SECONDS",
-        help="Padding in seconds added at the beginning of each split segment.",
-    )
-    parser.add_argument(
-        "--padding-end",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help="Padding in seconds added at the end of each split segment.",
+        help="Max silence kept at split points: if a silence is longer than 2× this value, only this much is kept on each side (seconds).",
     )
     return parser
 
@@ -129,8 +122,7 @@ def get_settings(args: argparse.Namespace) -> dict:
         "min_silence_duration": float,
         "min_segment_length": float,
         "max_segment_length": float,
-        "padding_start": float,
-        "padding_end": float,
+        "max_padding": float,
     }
 
     if config.has_section(CONFIG_SECTION):
@@ -156,10 +148,8 @@ def get_settings(args: argparse.Namespace) -> dict:
         settings["min_segment_length"] = args.min_segment_length
     if args.max_segment_length is not None:
         settings["max_segment_length"] = args.max_segment_length
-    if args.padding_start is not None:
-        settings["padding_start"] = args.padding_start
-    if args.padding_end is not None:
-        settings["padding_end"] = args.padding_end
+    if args.max_padding is not None:
+        settings["max_padding"] = args.max_padding
 
     settings["input"] = args.input
     settings["config_path"] = args.config
@@ -177,6 +167,50 @@ def load_audio(path: Path) -> AudioSegment:
     if not path.exists():
         raise FileNotFoundError(f"Input file not found: {path}")
     return AudioSegment.from_file(path)
+
+
+def split_at_silence_midpoints(
+    audio: AudioSegment,
+    min_silence_len_ms: int,
+    silence_thresh: float,
+    max_padding_ms: int,
+    seek_step_ms: int = 10,
+) -> list[AudioSegment]:
+    """
+    Split audio at qualified silences so no content is cut off. When a silence
+    is longer than 2× max_padding_ms, we keep at most max_padding_ms on each
+    side (trimming the middle); otherwise we split at the midpoint.
+    """
+    silences = detect_silence(
+        audio,
+        min_silence_len=min_silence_len_ms,
+        silence_thresh=silence_thresh,
+        seek_step=seek_step_ms,
+    )
+    if not silences:
+        return [audio]
+    split_points: list[int] = []
+    drop_ranges: list[tuple[int, int]] = []
+    for start_ms, end_ms in silences:
+        dur_ms = end_ms - start_ms
+        if dur_ms > 2 * max_padding_ms:
+            split_points.append(start_ms + max_padding_ms)
+            split_points.append(end_ms - max_padding_ms)
+            drop_ranges.append((start_ms + max_padding_ms, end_ms - max_padding_ms))
+        else:
+            split_points.append((start_ms + end_ms) // 2)
+    split_points = sorted(set([0] + split_points + [len(audio)]))
+    segments = [
+        audio[split_points[i] : split_points[i + 1]]
+        for i in range(len(split_points) - 1)
+    ]
+    # Drop segments that are the trimmed "middle" of a long silence
+    drop_set = set(drop_ranges)
+    return [
+        seg
+        for i, seg in enumerate(segments)
+        if (split_points[i], split_points[i + 1]) not in drop_set
+    ]
 
 
 def merge_short_chunks(
@@ -198,7 +232,11 @@ def merge_short_chunks(
             merged.append(acc)
             acc = ch
     if acc is not None:
-        merged.append(acc)
+        if len(acc) < min_len_ms and merged:
+            # Final segment is below minimum; merge into previous so no output is under min
+            merged[-1] = merged[-1] + acc
+        else:
+            merged.append(acc)
     return merged
 
 
@@ -267,21 +305,17 @@ def run_split(settings: dict) -> list[Path]:
     silence_thresh = settings["silence_threshold"]
     min_seg_ms = sec_to_ms(settings["min_segment_length"])
     max_seg_ms = sec_to_ms(settings["max_segment_length"])
-    pad_start_ms = sec_to_ms(settings["padding_start"])
-    pad_end_ms = sec_to_ms(settings["padding_end"])
+    max_padding_ms = sec_to_ms(settings["max_padding"])
 
     audio = load_audio(input_path)
-    # Split on silence; keep_silence=0, we add our own padding per segment
-    chunks = split_on_silence(
+    # Split at qualified silences; trim long silences to max_padding on each side
+    chunks = split_at_silence_midpoints(
         audio,
-        min_silence_len=min_silence_ms,
+        min_silence_len_ms=min_silence_ms,
         silence_thresh=silence_thresh,
-        keep_silence=0,
-        seek_step=10,
+        max_padding_ms=max_padding_ms,
+        seek_step_ms=10,
     )
-    if not chunks:
-        # No silence found — treat whole file as one segment
-        chunks = [audio]
 
     chunks = enforce_min_max_segments(
         chunks, min_seg_ms, max_seg_ms, min_silence_ms, silence_thresh
@@ -290,14 +324,9 @@ def run_split(settings: dict) -> list[Path]:
     suffix = input_path.suffix.lower() or ".mp3"
     out_paths: list[Path] = []
     for i, chunk in enumerate(chunks):
-        padded = (
-            AudioSegment.silent(duration=pad_start_ms)
-            + chunk
-            + AudioSegment.silent(duration=pad_end_ms)
-        )
         out_name = f"segment_{i:04d}{suffix}"
         out_path = output_dir / out_name
-        padded.export(out_path, format=suffix.lstrip("."), bitrate="192k")
+        chunk.export(out_path, format=suffix.lstrip("."), bitrate="192k")
         out_paths.append(out_path)
         print(f"Exported {out_name}", file=sys.stderr)
     return out_paths

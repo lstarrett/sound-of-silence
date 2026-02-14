@@ -4,8 +4,9 @@ A single-file Python script that splits an input audio file into multiple files 
 
 ## Features
 
-- **Silence-based splitting**: Detects silent segments in an audio file and outputs one file per “non-silent” segment.
+- **Silence-based splitting**: Detects silent segments in an audio file and outputs one file per segment, splitting in the middle of each qualified silence so no content is cut off.
 - **Min/max segment length**: Set minimum and maximum split segment lengths; the script automatically finds and splits on the best moment of silence between those gates.
+- **Max padding**: For silences longer than 2× `max_padding`, only `max_padding` seconds are kept at the end of one segment and the start of the next; the middle of the silence is removed (e.g. 10 s silence with 2 s max padding → 2 s at end of first segment, 2 s at start of second, 6 s removed).
 - **Configurable**: Options can be set via command-line arguments or a configuration file (configparser-style `.ini` or `.conf`).
 - **Single-file design**: All logic lives in `silence.py` for easy distribution and use.
 
@@ -21,7 +22,7 @@ python silence.py --config default.conf input.mp3
 
 ## Configuration
 
-Settings can be provided in a config file (see `default.conf`) or overridden on the command line. Command-line values take precedence over config file values.
+Settings can be provided in a config file (see `default.conf`) or overridden on the command line. Command-line values take precedence over config file values. Key options include `min_silence_duration`, `min_segment_length`, `max_segment_length`, and `max_padding` (max silence kept at split points when a silence is longer than 2× that value).
 
 ## Setup
 
