@@ -51,6 +51,7 @@ cover/
 
 # Virtual environments
 venv/
+myenv/
 ENV/
 env/
 .venv/
