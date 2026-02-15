@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sound of Silence — Split an audio file into multiple files based on detected silence.
+Sound of Silence — Split an audio file into multiple files based on detected silence and desired output segments length.
 
 Uses pydub (detect_silence). Splits at the midpoint of each qualified silence
 so no audio is cut off. Accepts settings from command-line arguments and/or
@@ -152,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser with options that mirror config file keys."""
     parser = argparse.ArgumentParser(
         prog="silence",
-        description="Split an audio file into multiple files based on detected silence.",
+        description="Split an audio file into multiple files based on detected silence and desired output segments length.",
     )
     parser.add_argument(
         "input",
@@ -483,7 +483,7 @@ def run_split(settings: dict) -> list[Path]:
         _export_segment_with_elapsed(label, do_export)
         out_paths.append(out_path)
     total_elapsed = time.perf_counter() - run_start
-    print("Success!", file=sys.stderr)
+    print("Success!!", file=sys.stderr)
     print(f"  Wrote {total} file(s) to {output_dir}.", file=sys.stderr)
     print(
         f"  Total time elapsed [{_format_elapsed_hh_mm_ss(total_elapsed)}]",
