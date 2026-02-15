@@ -10,6 +10,8 @@ a config file (configparser format). Command-line values override config.
 import argparse
 import configparser
 import sys
+import threading
+import time
 from pathlib import Path
 
 from pydub import AudioSegment
@@ -18,6 +20,65 @@ from pydub.silence import detect_silence
 
 DEFAULT_CONFIG_PATH = Path("default.conf")
 CONFIG_SECTION = "silence"
+LARGE_FILE_NOTE_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _format_duration_ms(ms: float) -> str:
+    """Format duration in ms as HH:MM:SS.ss."""
+    s = ms / 1000.0
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s % 60
+    return f"{h:02d}:{m:02d}:{sec:05.2f}"
+
+
+def _format_size_bytes(size_bytes: int) -> str:
+    """Format size as human-readable string (e.g. '45.2 MB')."""
+    mb = size_bytes / (1024 * 1024)
+    return f"{mb:.1f} MB"
+
+
+def _format_elapsed_mm_ss(seconds: float) -> str:
+    """Format elapsed time as mm:ss."""
+    total = int(seconds)
+    m, s = total // 60, total % 60
+    return f"{m:02d}:{s:02d}"
+
+
+def _format_elapsed_hh_mm_ss(seconds: float) -> str:
+    """Format elapsed time as hh:mm:ss."""
+    total = int(seconds)
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def _run_with_elapsed(message: str, func, *args, **kwargs):
+    """Run func(*args, **kwargs); show 'Message... [mm:ss]' and update every second until done."""
+    result = [None]
+    err = [None]
+    start = time.perf_counter()
+
+    def work():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            err[0] = e
+
+    t = threading.Thread(target=work)
+    t.start()
+    while t.is_alive():
+        elapsed = time.perf_counter() - start
+        line = f"{message}... [{_format_elapsed_mm_ss(elapsed)}]"
+        print(f"\r{line}", end="", file=sys.stderr)
+        sys.stderr.flush()
+        time.sleep(1)
+    line = f"{message}... [{_format_elapsed_mm_ss(time.perf_counter() - start)}]"
+    print(f"\r{line}", file=sys.stderr)
+    if err[0] is not None:
+        raise err[0]
+    return result[0]
 
 
 class ConfigError(Exception):
@@ -301,34 +362,65 @@ def run_split(settings: dict) -> list[Path]:
     output_dir = Path(settings["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    file_size = input_path.stat().st_size
+    run_start = time.perf_counter()
+
     min_silence_ms = sec_to_ms(settings["min_silence_duration"])
     silence_thresh = settings["silence_threshold"]
     min_seg_ms = sec_to_ms(settings["min_segment_length"])
     max_seg_ms = sec_to_ms(settings["max_segment_length"])
     max_padding_ms = sec_to_ms(settings["max_padding"])
 
-    audio = load_audio(input_path)
-    # Split at qualified silences; trim long silences to max_padding on each side
-    chunks = split_at_silence_midpoints(
-        audio,
-        min_silence_len_ms=min_silence_ms,
-        silence_thresh=silence_thresh,
-        max_padding_ms=max_padding_ms,
-        seek_step_ms=10,
-    )
+    audio = _run_with_elapsed("Loading input file", load_audio, input_path)
+    duration_ms = len(audio)
+    print(f"  Loaded.", file=sys.stderr)
+    print(f"  File: {input_path.name}", file=sys.stderr)
+    print(f"  Length: {_format_duration_ms(duration_ms)}", file=sys.stderr)
+    print(f"  Size: {_format_size_bytes(file_size)}", file=sys.stderr)
+    if file_size > LARGE_FILE_NOTE_BYTES:
+        print(
+            "  Note: Larger files may take several minutes to analyze and export.",
+            file=sys.stderr,
+        )
 
-    chunks = enforce_min_max_segments(
-        chunks, min_seg_ms, max_seg_ms, min_silence_ms, silence_thresh
-    )
+    def do_analyze():
+        return split_at_silence_midpoints(
+            audio,
+            min_silence_len_ms=min_silence_ms,
+            silence_thresh=silence_thresh,
+            max_padding_ms=max_padding_ms,
+            seek_step_ms=10,
+        )
 
+    chunks = _run_with_elapsed("Analyzing silence", do_analyze)
+    print(f"  Built {len(chunks)} segment(s).", file=sys.stderr)
+
+    def do_enforce():
+        return enforce_min_max_segments(
+            chunks, min_seg_ms, max_seg_ms, min_silence_ms, silence_thresh
+        )
+
+    chunks = _run_with_elapsed(
+        "Enforcing min/max segment length", do_enforce
+    )
+    print(f"  Done. {len(chunks)} segment(s).", file=sys.stderr)
+
+    total = len(chunks)
     suffix = input_path.suffix.lower() or ".mp3"
-    out_paths: list[Path] = []
+    print("Exporting segments...", file=sys.stderr)
+    out_paths = []
     for i, chunk in enumerate(chunks):
         out_name = f"segment_{i:04d}{suffix}"
         out_path = output_dir / out_name
+        print(f"  [{i + 1}/{total}] {out_name}", file=sys.stderr)
         chunk.export(out_path, format=suffix.lstrip("."), bitrate="192k")
         out_paths.append(out_path)
-        print(f"Exported {out_name}", file=sys.stderr)
+    total_elapsed = time.perf_counter() - run_start
+    print(f"  Wrote {total} file(s) to {output_dir}.", file=sys.stderr)
+    print(
+        f"  Total time elapsed [{_format_elapsed_hh_mm_ss(total_elapsed)}]",
+        file=sys.stderr,
+    )
     return out_paths
 
 
