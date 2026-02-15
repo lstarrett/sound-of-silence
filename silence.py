@@ -24,12 +24,12 @@ LARGE_FILE_NOTE_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
 def _format_duration_ms(ms: float) -> str:
-    """Format duration in ms as HH:MM:SS.ss."""
-    s = ms / 1000.0
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = s % 60
-    return f"{h:02d}:{m:02d}:{sec:05.2f}"
+    """Format duration in ms as HH:MM:SS, rounded to nearest second."""
+    total_sec = round(ms / 1000.0)
+    h = total_sec // 3600
+    m = (total_sec % 3600) // 60
+    s = total_sec % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def _format_size_bytes(size_bytes: int) -> str:
@@ -79,6 +79,37 @@ def _run_with_elapsed(message: str, func, *args, **kwargs):
     if err[0] is not None:
         raise err[0]
     return result[0]
+
+
+def _export_segment_with_elapsed(label: str, export_fn) -> None:
+    """Run export_fn(); if it takes longer than 1s, show 'label [mm:ss]' updating every second."""
+    err = [None]
+    start = time.perf_counter()
+
+    def work():
+        try:
+            export_fn()
+        except Exception as e:
+            err[0] = e
+
+    t = threading.Thread(target=work)
+    t.start()
+    time.sleep(1)
+    if not t.is_alive():
+        print(f"  {label} [00:00]", file=sys.stderr)
+        if err[0] is not None:
+            raise err[0]
+        return
+    while t.is_alive():
+        elapsed = time.perf_counter() - start
+        line = f"  {label} [{_format_elapsed_mm_ss(elapsed)}]"
+        print(f"\r{line}", end="", file=sys.stderr)
+        sys.stderr.flush()
+        time.sleep(1)
+    line = f"  {label} [{_format_elapsed_mm_ss(time.perf_counter() - start)}]"
+    print(f"\r{line}", file=sys.stderr)
+    if err[0] is not None:
+        raise err[0]
 
 
 class ConfigError(Exception):
@@ -373,7 +404,6 @@ def run_split(settings: dict) -> list[Path]:
 
     audio = _run_with_elapsed("Loading input file", load_audio, input_path)
     duration_ms = len(audio)
-    print(f"  Loaded.", file=sys.stderr)
     print(f"  File: {input_path.name}", file=sys.stderr)
     print(f"  Length: {_format_duration_ms(duration_ms)}", file=sys.stderr)
     print(f"  Size: {_format_size_bytes(file_size)}", file=sys.stderr)
@@ -406,16 +436,21 @@ def run_split(settings: dict) -> list[Path]:
     print(f"  Done. {len(chunks)} segment(s).", file=sys.stderr)
 
     total = len(chunks)
-    suffix = input_path.suffix.lower() or ".mp3"
+    # Always export as MP3 for maximum compatibility, regardless of input format
     print("Exporting segments...", file=sys.stderr)
     out_paths = []
     for i, chunk in enumerate(chunks):
-        out_name = f"segment_{i:04d}{suffix}"
+        out_name = f"segment_{i:04d}.mp3"
         out_path = output_dir / out_name
-        print(f"  [{i + 1}/{total}] {out_name}", file=sys.stderr)
-        chunk.export(out_path, format=suffix.lstrip("."), bitrate="192k")
+        label = f"[{i + 1}/{total}] {out_name}"
+
+        def do_export(ch=chunk, p=out_path):
+            ch.export(p, format="mp3", bitrate="192k")
+
+        _export_segment_with_elapsed(label, do_export)
         out_paths.append(out_path)
     total_elapsed = time.perf_counter() - run_start
+    print("Success!", file=sys.stderr)
     print(f"  Wrote {total} file(s) to {output_dir}.", file=sys.stderr)
     print(
         f"  Total time elapsed [{_format_elapsed_hh_mm_ss(total_elapsed)}]",
