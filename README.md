@@ -1,6 +1,6 @@
 # Sound of Silence
 
-A single-file Python script that splits an input audio file into multiple files based on detected periods of silence and desired output segment length, and exports the results as a sequence of mp3 files.
+A single-file Python script that splits an input audio file into multiple files based on detected periods of silence and desired length of output segments, and exports the results as a sequence of mp3 files.
 
 ## Features
 
