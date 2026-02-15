@@ -222,7 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         metavar="N",
-        help="Minimum number of digits for segment number (zero-padded).",
+        help="Minimum number of digits for segment number, zero-padded (e.g. 2 -> chapter_01.mp3, chapter_02.mp3, ...)",
     )
     return parser
 
