@@ -40,7 +40,7 @@ python silence.py --config path/to/config.ini input.mp3
 
 ## Configuration
 
-Settings can be provided in a config file (see `config.ini`) or overridden on the command line. Command-line values take precedence over config file values. Key options include `min_silence_duration`, `min_segment_length`, `max_segment_length`, and `max_padding` (max silence kept at split points when a silence is longer than 2× that value).
+Settings can be provided in a config file (see `config.ini`) or overridden on the command line. Command-line values take precedence over config file values. Key options include `output`, `level`, `silence`, `minlen`, `maxlen`, `pad`, `label`, and `digits`.
 
 ## License
 

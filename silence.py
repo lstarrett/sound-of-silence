@@ -119,24 +119,24 @@ class ConfigError(Exception):
 
 # Required settings (must be present in config or CLI); used for validation and type conversion
 _REQUIRED_SETTINGS = (
-    "output_dir",
-    "silence_threshold",
-    "min_silence_duration",
-    "min_segment_length",
-    "max_segment_length",
-    "max_padding",
-    "segment_label",
-    "segment_num_min_digits",
+    "output",
+    "level",
+    "silence",
+    "minlen",
+    "maxlen",
+    "pad",
+    "label",
+    "digits",
 )
 _TYPE_MAP = {
-    "output_dir": str,
-    "silence_threshold": float,
-    "min_silence_duration": float,
-    "min_segment_length": float,
-    "max_segment_length": float,
-    "max_padding": float,
-    "segment_label": str,
-    "segment_num_min_digits": int,
+    "output": str,
+    "level": float,
+    "silence": float,
+    "minlen": float,
+    "maxlen": float,
+    "pad": float,
+    "label": str,
+    "digits": int,
 }
 
 
@@ -168,7 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Path to config file (default: {DEFAULT_CONFIG_PATH}).",
     )
     parser.add_argument(
-        "--output-dir",
+        "--output",
         "-o",
         type=Path,
         default=None,
@@ -176,53 +176,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output directory for split audio files.",
     )
     parser.add_argument(
-        "--silence-threshold",
+        "--level",
         type=float,
         default=None,
         metavar="DB",
         help="Volume threshold in dBFS below which is considered silence.",
     )
     parser.add_argument(
-        "--min-silence-duration",
+        "--silence",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Minimum duration of silence to use as a split point (seconds).",
     )
     parser.add_argument(
-        "--min-segment-length",
+        "--minlen",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Minimum length of each split segment (seconds); shorter segments are merged.",
     )
     parser.add_argument(
-        "--max-segment-length",
+        "--maxlen",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Maximum length of each split segment (seconds); split at best silence within range.",
     )
     parser.add_argument(
-        "--max-padding",
+        "--pad",
         type=float,
         default=None,
         metavar="SECONDS",
         help="Max silence kept at split points: if a silence is longer than 2× this value, only this much is kept on each side (seconds).",
     )
     parser.add_argument(
-        "--segment-label",
+        "--label",
         type=str,
         default=None,
         metavar="LABEL",
         help="Label used to name output files (e.g. 'chapter' -> chapter_00.mp3).",
     )
     parser.add_argument(
-        "--segment-num-min-digits",
+        "--digits",
         type=int,
         default=None,
         metavar="N",
-        help="Minimum number of digits for segment number, zero-padded (e.g. 2 -> chapter_01.mp3, chapter_02.mp3, ...)",
+        help="Minimum number of digits for segment number, zero-padded (e.g. 2 -> chapter_01.mp3, chapter_02.mp3, ...).",
     )
     return parser
 
@@ -255,22 +255,22 @@ def get_settings(args: argparse.Namespace) -> dict:
     if DEFAULT_CONFIG_PATH.exists():
         settings.update(_config_to_settings(load_config(DEFAULT_CONFIG_PATH)))
     settings.update(_config_to_settings(load_config(args.config)))
-    if args.output_dir is not None:
-        settings["output_dir"] = str(args.output_dir)
-    if args.silence_threshold is not None:
-        settings["silence_threshold"] = args.silence_threshold
-    if args.min_silence_duration is not None:
-        settings["min_silence_duration"] = args.min_silence_duration
-    if args.min_segment_length is not None:
-        settings["min_segment_length"] = args.min_segment_length
-    if args.max_segment_length is not None:
-        settings["max_segment_length"] = args.max_segment_length
-    if args.max_padding is not None:
-        settings["max_padding"] = args.max_padding
-    if args.segment_label is not None:
-        settings["segment_label"] = args.segment_label
-    if args.segment_num_min_digits is not None:
-        settings["segment_num_min_digits"] = args.segment_num_min_digits
+    if args.output is not None:
+        settings["output"] = str(args.output)
+    if args.level is not None:
+        settings["level"] = args.level
+    if args.silence is not None:
+        settings["silence"] = args.silence
+    if args.minlen is not None:
+        settings["minlen"] = args.minlen
+    if args.maxlen is not None:
+        settings["maxlen"] = args.maxlen
+    if args.pad is not None:
+        settings["pad"] = args.pad
+    if args.label is not None:
+        settings["label"] = args.label
+    if args.digits is not None:
+        settings["digits"] = args.digits
 
     settings["input"] = args.input
     settings["config_path"] = args.config
@@ -419,17 +419,17 @@ def enforce_min_max_segments(
 def run_split(settings: dict) -> list[Path]:
     """Load audio, split on silence, apply min/max and padding, export. Returns output paths."""
     input_path = Path(settings["input"])
-    output_dir = Path(settings["output_dir"])
+    output_dir = Path(settings["output"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
     file_size = input_path.stat().st_size
     run_start = time.perf_counter()
 
-    min_silence_ms = sec_to_ms(settings["min_silence_duration"])
-    silence_thresh = settings["silence_threshold"]
-    min_seg_ms = sec_to_ms(settings["min_segment_length"])
-    max_seg_ms = sec_to_ms(settings["max_segment_length"])
-    max_padding_ms = sec_to_ms(settings["max_padding"])
+    min_silence_ms = sec_to_ms(settings["silence"])
+    silence_thresh = settings["level"]
+    min_seg_ms = sec_to_ms(settings["minlen"])
+    max_seg_ms = sec_to_ms(settings["maxlen"])
+    max_padding_ms = sec_to_ms(settings["pad"])
 
     audio = _run_with_elapsed("Loading input file", load_audio, input_path)
     duration_ms = len(audio)
@@ -465,8 +465,8 @@ def run_split(settings: dict) -> list[Path]:
     print(f"  Done. {len(chunks)} segment(s).", file=sys.stderr)
 
     total = len(chunks)
-    segment_label = settings["segment_label"]
-    min_digits = max(1, int(settings["segment_num_min_digits"]))
+    segment_label = settings["label"]
+    min_digits = max(1, int(settings["digits"]))
     # Always export as MP3 for maximum compatibility, regardless of input format
     print("Exporting segments...", file=sys.stderr)
     out_paths = []
@@ -515,7 +515,7 @@ def main() -> int:
 
     missing = [k for k in _REQUIRED_SETTINGS if k not in settings]
     if missing:
-        names = ", ".join(k.replace("_", "-") for k in missing)
+        names = ", ".join(missing)
         print(
             f"Missing required value(s): {names}. Set in config file or use command-line arguments.",
             file=sys.stderr,
