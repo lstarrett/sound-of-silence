@@ -18,7 +18,8 @@ from pydub import AudioSegment
 from pydub.silence import detect_silence
 
 
-DEFAULT_CONFIG_PATH = Path("default.conf")
+# Default config path: config.ini in the current working directory (overridden by --config / -c)
+DEFAULT_CONFIG_PATH = Path.cwd() / "config.ini"
 CONFIG_SECTION = "silence"
 LARGE_FILE_NOTE_BYTES = 100 * 1024 * 1024  # 100 MB
 
@@ -116,14 +117,26 @@ class ConfigError(Exception):
     """Raised when a config file contains an illegal or malformed value."""
 
 
-# Defaults when not set by config or CLI
-DEFAULTS = {
-    "output_dir": "output",
-    "silence_threshold": -40.0,
-    "min_silence_duration": 0.5,
-    "min_segment_length": 1.0,
-    "max_segment_length": 600.0,
-    "max_padding": 0.0,
+# Required settings (must be present in config or CLI); used for validation and type conversion
+_REQUIRED_SETTINGS = (
+    "output_dir",
+    "silence_threshold",
+    "min_silence_duration",
+    "min_segment_length",
+    "max_segment_length",
+    "max_padding",
+    "segment_label",
+    "segment_num_min_digits",
+)
+_TYPE_MAP = {
+    "output_dir": str,
+    "silence_threshold": float,
+    "min_silence_duration": float,
+    "min_segment_length": float,
+    "max_segment_length": float,
+    "max_padding": float,
+    "segment_label": str,
+    "segment_num_min_digits": int,
 }
 
 
@@ -197,39 +210,51 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECONDS",
         help="Max silence kept at split points: if a silence is longer than 2× this value, only this much is kept on each side (seconds).",
     )
+    parser.add_argument(
+        "--segment-label",
+        type=str,
+        default=None,
+        metavar="LABEL",
+        help="Label used to name output files (e.g. 'chapter' -> chapter_00.mp3).",
+    )
+    parser.add_argument(
+        "--segment-num-min-digits",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Minimum number of digits for segment number (zero-padded).",
+    )
     return parser
+
+
+def _config_to_settings(config: configparser.ConfigParser) -> dict:
+    """Build a settings dict from a config file (CONFIG_SECTION). Invalid values raise ConfigError."""
+    settings = {}
+    if not config.has_section(CONFIG_SECTION):
+        return settings
+    for key in config.options(CONFIG_SECTION):
+        norm_key = key.lower().replace("-", "_")
+        raw = config.get(CONFIG_SECTION, key).strip()
+        if norm_key in _TYPE_MAP:
+            conv = _TYPE_MAP[norm_key]
+            try:
+                settings[norm_key] = conv(raw) if conv is not str else raw
+            except (ValueError, TypeError) as e:
+                raise ConfigError(
+                    f"Invalid value for '{key}' in config: {raw!r}. Expected a valid {conv.__name__}."
+                ) from e
+    return settings
 
 
 def get_settings(args: argparse.Namespace) -> dict:
     """
-    Merge config file and command-line arguments into a single settings dict.
-    CLI values override config values. Missing values use DEFAULTS.
+    Merge default config (config.ini in cwd), then actual config file, then CLI.
+    No defaults or fallbacks; caller must validate that all required settings are present.
     """
-    config = load_config(args.config)
-    settings = dict(DEFAULTS)
-
-    type_map = {
-        "output_dir": str,
-        "silence_threshold": float,
-        "min_silence_duration": float,
-        "min_segment_length": float,
-        "max_segment_length": float,
-        "max_padding": float,
-    }
-
-    if config.has_section(CONFIG_SECTION):
-        for key in config.options(CONFIG_SECTION):
-            norm_key = key.lower().replace("-", "_")
-            raw = config.get(CONFIG_SECTION, key).strip()
-            if norm_key in type_map:
-                conv = type_map[norm_key]
-                try:
-                    settings[norm_key] = conv(raw) if conv is not str else raw
-                except (ValueError, TypeError) as e:
-                    raise ConfigError(
-                        f"Invalid value for '{key}' in config: {raw!r}. Expected a valid {conv.__name__}."
-                    ) from e
-
+    settings = {}
+    if DEFAULT_CONFIG_PATH.exists():
+        settings.update(_config_to_settings(load_config(DEFAULT_CONFIG_PATH)))
+    settings.update(_config_to_settings(load_config(args.config)))
     if args.output_dir is not None:
         settings["output_dir"] = str(args.output_dir)
     if args.silence_threshold is not None:
@@ -242,6 +267,10 @@ def get_settings(args: argparse.Namespace) -> dict:
         settings["max_segment_length"] = args.max_segment_length
     if args.max_padding is not None:
         settings["max_padding"] = args.max_padding
+    if args.segment_label is not None:
+        settings["segment_label"] = args.segment_label
+    if args.segment_num_min_digits is not None:
+        settings["segment_num_min_digits"] = args.segment_num_min_digits
 
     settings["input"] = args.input
     settings["config_path"] = args.config
@@ -436,11 +465,15 @@ def run_split(settings: dict) -> list[Path]:
     print(f"  Done. {len(chunks)} segment(s).", file=sys.stderr)
 
     total = len(chunks)
+    segment_label = settings["segment_label"]
+    min_digits = max(1, int(settings["segment_num_min_digits"]))
     # Always export as MP3 for maximum compatibility, regardless of input format
     print("Exporting segments...", file=sys.stderr)
     out_paths = []
     for i, chunk in enumerate(chunks):
-        out_name = f"segment_{i:04d}.mp3"
+        # Pad to at least min_digits; more digits used when segment count exceeds 10^min_digits (e.g. 100+ with min_digits=2 -> 100, 101, ...)
+        num_str = str(i).zfill(min_digits)
+        out_name = f"{segment_label}_{num_str}.mp3"
         out_path = output_dir / out_name
         label = f"[{i + 1}/{total}] {out_name}"
 
@@ -464,10 +497,30 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    # If using default config location and it's missing, show a friendly error and help
+    if args.config.resolve() == DEFAULT_CONFIG_PATH.resolve() and not args.config.exists():
+        print(
+            "config.ini not found. Use --config to indicate config file, or use command line arguments.",
+            file=sys.stderr,
+        )
+        parser.print_help(sys.stderr)
+        return 1
+
     try:
         settings = get_settings(args)
     except ConfigError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
+        parser.print_help(sys.stderr)
+        return 1
+
+    missing = [k for k in _REQUIRED_SETTINGS if k not in settings]
+    if missing:
+        names = ", ".join(k.replace("_", "-") for k in missing)
+        print(
+            f"Missing required value(s): {names}. Set in config file or use command-line arguments.",
+            file=sys.stderr,
+        )
+        parser.print_help(sys.stderr)
         return 1
 
     input_path = settings["input"]

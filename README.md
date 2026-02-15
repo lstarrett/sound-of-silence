@@ -16,13 +16,13 @@ A single-file Python script that splits an input audio file into multiple files 
 # Using command-line arguments (other formats like .wav and .m4a are supported)
 python silence.py input.mp3 [options]
 
-# Using a config file (default: default.conf)
-python silence.py --config default.conf input.mp3
+# Using a config file (default: config.ini)
+python silence.py --config config.ini input.mp3
 ```
 
 ## Configuration
 
-Settings can be provided in a config file (see `default.conf`) or overridden on the command line. Command-line values take precedence over config file values. Key options include `min_silence_duration`, `min_segment_length`, `max_segment_length`, and `max_padding` (max silence kept at split points when a silence is longer than 2× that value).
+Settings can be provided in a config file (see `config.ini`) or overridden on the command line. Command-line values take precedence over config file values. Key options include `min_silence_duration`, `min_segment_length`, `max_segment_length`, and `max_padding` (max silence kept at split points when a silence is longer than 2× that value).
 
 ## Setup
 
